@@ -440,7 +440,8 @@ impl<S> TlsStream<S> {
     }
 
     pub fn buffered_read_size(&self) -> Result<usize, Error> {
-        Ok(unsafe { (*self.session).bytes_available() })
+        //Ok(unsafe { (*self.session).bytes_available() })
+        Err(Error::Custom("Waiting on https://github.com/fortanix/rust-mbedtls/pull/52".to_owned()))
     }
 
     pub fn peer_certificate(&self) -> Result<Option<Certificate>, Error> {
