@@ -174,7 +174,9 @@ unsafe impl<S> Send for TlsStream<S> {}
 impl<S> Drop for TlsStream<S> {
     fn drop(&mut self) {
         unsafe {
-            Box::from_raw(self.session);
+            if self.session != ::std::ptr::null_mut() {
+                Box::from_raw(self.session);
+            }
             Box::from_raw(self.socket);
 
             Box::from_raw(self.ctx);
@@ -426,6 +428,8 @@ impl<S> TlsStream<S> {
     }
 
     pub fn tls_server_end_point(&self) -> Result<Option<Vec<u8>>, Error> {
+        // FIXME need to take server certificate in all cases, not always peer cert
+        // so this is broken for servers
         let cert = match self.peer_certificate()? {
             Some(cert) => cert,
             None => return Ok(None),
@@ -448,6 +452,10 @@ impl<S> TlsStream<S> {
 
     pub fn shutdown(&mut self) -> io::Result<()> {
         // Shutdown happens as a result of drop ...
+        unsafe {
+            Box::from_raw(self.session);
+            self.session = ::std::ptr::null_mut();
+        }
         Ok(())
     }
 }
