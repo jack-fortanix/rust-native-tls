@@ -152,7 +152,8 @@ fn cert_to_vec(certs_in: &[::Certificate]) -> Vec<MbedtlsCert> {
     certs
 }
 
-struct TlsState {
+#[derive(Debug)]
+pub struct TlsStream<S> {
     ca_certs: *mut Vec<MbedtlsCert>,
     ca_cert_list: *mut CertList<'static>,
     cred_pk: *mut Pk,
@@ -162,20 +163,20 @@ struct TlsState {
     rng: *mut CtrDrbg<'static>,
     config: *mut Config<'static>,
     ctx: *mut Context<'static>,
+    session: *mut Session<'static>,
+    socket: *mut S,
 }
 
-unsafe impl Sync for TlsState {}
-unsafe impl Send for TlsState {}
+/// ???
+unsafe impl<S> Sync for TlsStream<S> {}
+unsafe impl<S> Send for TlsStream<S> {}
 
-impl Clone for TlsState {
-    fn clone(&self) -> TlsState {
-        panic!("yolo")
-    }
-}
-
-impl Drop for TlsState {
+impl<S> Drop for TlsStream<S> {
     fn drop(&mut self) {
         unsafe {
+            Box::from_raw(self.session);
+            Box::from_raw(self.socket);
+
             Box::from_raw(self.ctx);
             Box::from_raw(self.config);
             Box::from_raw(self.rng);
@@ -198,122 +199,6 @@ impl Drop for TlsState {
             if self.ca_certs != ::std::ptr::null_mut() {
                 Box::from_raw(self.ca_certs);
             }
-        }
-    }
-}
-
-impl TlsState {
-    fn new_client(trust_roots: &[::Certificate],
-                  min_version: Option<Version>,
-                  max_version: Option<Version>,
-                  accept_invalid_certs: bool) -> TlsResult<Self> {
-
-        unsafe {
-            let ca_vec = Box::into_raw(Box::new(cert_to_vec(trust_roots)));
-            let ca_list = Box::into_raw(Box::new(CertList::from_vec(&mut *ca_vec).ok_or(TlsError::AesInvalidKeyLength)?));
-            let entropy = Box::into_raw(Box::new(OsEntropy::new()));
-            let rng = Box::into_raw(Box::new(CtrDrbg::new(&mut *entropy, None)?));
-            let config = Box::into_raw(Box::new(Config::new(Endpoint::Client, Transport::Stream, Preset::Default)));
-            (*config).set_rng(Some(&mut *rng));
-            (*config).set_ca_list(Some(&mut *ca_list), None);
-
-            if accept_invalid_certs {
-                (*config).set_authmode(mbedtls::ssl::config::AuthMode::None);
-            }
-
-            if let Some(min_version) = min_version {
-                (*config).set_min_version(min_version)?;
-            }
-            if let Some(max_version) = max_version {
-                (*config).set_max_version(max_version)?;
-            }
-
-            let ctx = Box::into_raw(Box::new(Context::new(&*config)?));
-
-            Ok(TlsState {
-                ca_certs: ca_vec,
-                ca_cert_list: ca_list,
-                cred_pk: ::std::ptr::null_mut(),
-                cred_certs: ::std::ptr::null_mut(),
-                cred_cert_list: ::std::ptr::null_mut(),
-                entropy: entropy,
-                rng: rng,
-                config: config,
-                ctx: ctx,
-            })
-        }
-    }
-
-    fn new_server(cert_chain: &[MbedtlsCert],
-                  key: &mut Pk,
-                  min_version: Option<Version>,
-                  max_version: Option<Version>) -> TlsResult<Self> {
-        fn pk_clone(pk: &mut Pk) -> TlsResult<Pk> {
-            let der = pk.write_private_der_vec()?;
-            Pk::from_private_key(&der, None)
-        }
-
-        unsafe {
-            let pk = Box::into_raw(Box::new(pk_clone(key)?));
-            let cert_chain = Box::into_raw(Box::new(cert_chain.to_vec()));
-            let cert_list = Box::into_raw(Box::new(CertList::from_vec(&mut *cert_chain).ok_or(TlsError::CamelliaInvalidInputLength)?));
-            let entropy = Box::into_raw(Box::new(OsEntropy::new()));
-            let rng = Box::into_raw(Box::new(CtrDrbg::new(&mut *entropy, None)?));
-            let config = Box::into_raw(Box::new(Config::new(Endpoint::Server, Transport::Stream, Preset::Default)));
-            (*config).set_rng(Some(&mut *rng));
-            (*config).push_cert(&mut *cert_list, &mut *pk)?;
-
-            if let Some(min_version) = min_version {
-                (*config).set_min_version(min_version)?;
-            }
-            if let Some(max_version) = max_version {
-                (*config).set_max_version(max_version)?;
-            }
-
-            let ctx = Box::into_raw(Box::new(Context::new(&*config)?));
-
-            Ok(TlsState {
-                ca_certs: ::std::ptr::null_mut(),
-                ca_cert_list: ::std::ptr::null_mut(),
-                cred_pk: pk,
-                cred_certs: cert_chain,
-                cred_cert_list: cert_list,
-                entropy: entropy,
-                rng: rng,
-                config: config,
-                ctx: ctx,
-            })
-        }
-    }
-
-    fn establish<S: io::Read + io::Write>(&self, stream: S, hostname: Option<&str>) -> TlsResult<TlsStream<S>> {
-        unsafe {
-            let stream_ptr = Box::into_raw(Box::new(stream));
-            let session = (*self.ctx).establish(&mut *stream_ptr, hostname)?;
-            let yolo_session = Box::into_raw(Box::new(std::mem::transmute::<Session<'_>, Session<'static>>(session)));
-            Ok(TlsStream {
-                session: yolo_session,
-                socket: stream_ptr,
-            })
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct TlsStream<S> {
-    session: *mut Session<'static>,
-    socket: *mut S,
-}
-
-unsafe impl<S> Sync for TlsStream<S> {}
-unsafe impl<S> Send for TlsStream<S> {}
-
-impl<S> Drop for TlsStream<S> {
-    fn drop(&mut self) {
-        //println!("Dropping TlsStream");
-        unsafe {
-            Box::from_raw(self.session);
-            Box::from_raw(self.socket);
         }
     }
 }
@@ -351,8 +236,12 @@ where
 
 #[derive(Clone)]
 pub struct TlsConnector {
-    state: TlsState,
-    accept_bad_hostname: bool,
+    min_protocol: Option<Protocol>,
+    max_protocol: Option<Protocol>,
+    root_certificates: Vec<::Certificate>,
+    accept_invalid_certs: bool,
+    accept_invalid_hostnames: bool,
+    use_sni: bool,
 }
 
 impl TlsConnector {
@@ -361,71 +250,150 @@ impl TlsConnector {
             return Err(Error::Custom("Client authentication not supported".to_owned()));
         }
 
-        let min_version = map_version(builder.min_protocol);
-        let max_version = map_version(builder.max_protocol);
-
-        let state = if builder.root_certificates.len() > 0 {
-            TlsState::new_client(&builder.root_certificates, min_version, max_version, builder.accept_invalid_certs)?
+        let trust_roots = if builder.root_certificates.len() > 0 {
+            builder.root_certificates.clone()
         } else {
-            let trust_roots = load_ca_certs("/usr/share/ca-certificates/mozilla")?;
-            TlsState::new_client(&trust_roots, min_version, max_version, builder.accept_invalid_certs)?
+            load_ca_certs("/usr/share/ca-certificates/mozilla")?
         };
 
-        Ok(TlsConnector { state, accept_bad_hostname: builder.accept_invalid_certs })
+        Ok(TlsConnector {
+            min_protocol: builder.min_protocol,
+            max_protocol: builder.max_protocol,
+            root_certificates: trust_roots,
+            accept_invalid_certs: builder.accept_invalid_certs,
+            accept_invalid_hostnames: builder.accept_invalid_hostnames,
+            use_sni: builder.use_sni
+        })
     }
 
     pub fn connect<S>(&self, domain: &str, stream: S) -> Result<TlsStream<S>, HandshakeError<S>>
     where
         S: io::Read + io::Write
     {
-        let channel = if self.accept_bad_hostname {
-            self.state.establish(stream, None)?
-        } else {
-            self.state.establish(stream, Some(domain))?
-        };
+        // If any of the ? fail then memory leaks ...
 
-        //println!("After establish, stream is {:?} at {:?}", channel.socket, channel.socket as *const S);
+        unsafe {
+            let ca_vec = Box::into_raw(Box::new(cert_to_vec(&self.root_certificates)));
+            let ca_list = Box::into_raw(Box::new(CertList::from_vec(&mut *ca_vec).ok_or(TlsError::AesInvalidKeyLength)?));
+            let entropy = Box::into_raw(Box::new(OsEntropy::new()));
+            let rng = Box::into_raw(Box::new(CtrDrbg::new(&mut *entropy, None)?));
+            let config = Box::into_raw(Box::new(Config::new(Endpoint::Client, Transport::Stream, Preset::Default)));
+            (*config).set_rng(Some(&mut *rng));
+            (*config).set_ca_list(Some(&mut *ca_list), None);
 
-        Ok(channel)
+            if self.accept_invalid_certs {
+                (*config).set_authmode(mbedtls::ssl::config::AuthMode::None);
+            }
+
+            if let Some(min_version) = map_version(self.min_protocol) {
+                (*config).set_min_version(min_version)?;
+            }
+            if let Some(max_version) = map_version(self.max_protocol) {
+                (*config).set_max_version(max_version)?;
+            }
+
+            let ctx = Box::into_raw(Box::new(Context::new(&*config)?));
+
+            let hostname = if self.accept_invalid_hostnames { None } else { Some(domain) };
+
+            let stream_ptr = Box::into_raw(Box::new(stream));
+            let session = (*ctx).establish(&mut *stream_ptr, hostname)?;
+            let session = Box::into_raw(Box::new(std::mem::transmute::<Session<'_>, Session<'static>>(session))); // yolo
+
+            Ok(TlsStream {
+                ca_certs: ca_vec,
+                ca_cert_list: ca_list,
+                cred_pk: ::std::ptr::null_mut(),
+                cred_certs: ::std::ptr::null_mut(),
+                cred_cert_list: ::std::ptr::null_mut(),
+                entropy: entropy,
+                rng: rng,
+                config: config,
+                ctx: ctx,
+                session: session,
+                socket: stream_ptr,
+            })
+        }
     }
 }
 
 #[derive(Clone)]
 pub struct TlsAcceptor {
-    state: TlsState,
+    identity: Pfx,
+    min_protocol: Option<Protocol>,
+    max_protocol: Option<Protocol>,
 }
 
 impl TlsAcceptor {
     pub fn new(builder: &TlsAcceptorBuilder) -> Result<TlsAcceptor, Error> {
-
-        let mut keys = (builder.identity.0).0.private_keys()?;
-        let certificates = (builder.identity.0).0.certificates()?;
-
-        if keys.len() != 1 {
-            return Err(Error::Custom("Unexpected number of keys in PKCS12 file".to_owned()))
-        }
-        if certificates.len() == 0 {
-            return Err(Error::Custom("PKCS12 file is missing certificate chain".to_owned()))
-        }
-
-        let mut cert_chain = vec![];
-
-        for cert in certificates {
-            cert_chain.push(cert.0);
-        }
-
-        let state = TlsState::new_server(&cert_chain, &mut keys[0].0,
-                                         map_version(builder.min_protocol),
-                                         map_version(builder.max_protocol)).map_err(Error::Normal)?;
-
-        Ok(TlsAcceptor { state })
+        Ok(TlsAcceptor {
+            identity: (builder.identity.0).0.clone(),
+            min_protocol: builder.min_protocol,
+            max_protocol: builder.max_protocol
+        })
     }
 
     pub fn accept<S>(&self, stream: S) -> Result<TlsStream<S>, HandshakeError<S>>
     where
         S: io::Read + io::Write
     {
-        Ok(self.state.establish(stream, None)?)
+        let mut keys = self.identity.private_keys().map_err(Error::Pkcs12).map_err(HandshakeError::Failure)?;
+        let certificates = self.identity.certificates().map_err(Error::Pkcs12).map_err(HandshakeError::Failure)?;
+
+        if keys.len() != 1 {
+            return Err(HandshakeError::Failure(Error::Custom("Unexpected number of keys in PKCS12 file".to_owned())))
+        }
+        if certificates.len() == 0 {
+            return Err(HandshakeError::Failure(Error::Custom("PKCS12 file is missing certificate chain".to_owned())))
+        }
+
+        let mut cert_chain = vec![];
+        for cert in certificates {
+            cert_chain.push(cert.0);
+        }
+
+        fn pk_clone(pk: &mut Pk) -> TlsResult<Pk> {
+            let der = pk.write_private_der_vec()?;
+            Pk::from_private_key(&der, None)
+        }
+
+        unsafe {
+            let pk = Box::into_raw(Box::new(pk_clone(&mut keys[0].0)?));
+            let cert_chain = Box::into_raw(Box::new(cert_chain.to_vec()));
+            let cert_list = Box::into_raw(Box::new(CertList::from_vec(&mut *cert_chain).ok_or(TlsError::CamelliaInvalidInputLength)?));
+            let entropy = Box::into_raw(Box::new(OsEntropy::new()));
+            let rng = Box::into_raw(Box::new(CtrDrbg::new(&mut *entropy, None)?));
+            let config = Box::into_raw(Box::new(Config::new(Endpoint::Server, Transport::Stream, Preset::Default)));
+            (*config).set_rng(Some(&mut *rng));
+            (*config).push_cert(&mut *cert_list, &mut *pk)?;
+
+            if let Some(min_version) = map_version(self.min_protocol) {
+                (*config).set_min_version(min_version)?;
+            }
+            if let Some(max_version) = map_version(self.max_protocol) {
+                (*config).set_max_version(max_version)?;
+            }
+
+            let ctx = Box::into_raw(Box::new(Context::new(&*config)?));
+
+            let stream_ptr = Box::into_raw(Box::new(stream));
+            let session = (*ctx).establish(&mut *stream_ptr, None)?;
+            let session = Box::into_raw(Box::new(std::mem::transmute::<Session<'_>, Session<'static>>(session))); // yolo
+
+            Ok(TlsStream {
+                ca_certs: ::std::ptr::null_mut(),
+                ca_cert_list: ::std::ptr::null_mut(),
+                cred_pk: pk,
+                cred_certs: cert_chain,
+                cred_cert_list: cert_list,
+                entropy: entropy,
+                rng: rng,
+                config: config,
+                ctx: ctx,
+                session: session,
+                socket: stream_ptr,
+            })
+        }
     }
 }
 
