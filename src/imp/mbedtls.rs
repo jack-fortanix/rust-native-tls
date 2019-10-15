@@ -165,7 +165,6 @@ pub struct TlsStream<S> {
     socket: *mut S,
 }
 
-/// ???
 unsafe impl<S> Sync for TlsStream<S> {}
 unsafe impl<S> Send for TlsStream<S> {}
 
@@ -229,8 +228,7 @@ where
     S: io::Read + io::Write,
 {
     pub fn handshake(self) -> Result<TlsStream<S>, HandshakeError<S>> {
-        panic!("what to do?");
-        Ok(self.stream) // ???
+        Ok(self.stream)
     }
 }
 
@@ -400,11 +398,11 @@ impl TlsAcceptor {
 impl<S> TlsStream<S> {
 
     pub fn get_ref(&self) -> &S {
-        panic!("no");
+        unsafe { self.socket.as_ref().unwrap() }
     }
 
     pub fn get_mut(&mut self) -> &mut S {
-        panic!("no");
+        unsafe { self.socket.as_mut().unwrap() }
     }
 
     pub fn buffered_read_size(&self) -> Result<usize, Error> {
