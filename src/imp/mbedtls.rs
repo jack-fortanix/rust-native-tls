@@ -108,14 +108,18 @@ fn map_version(protocol: Option<Protocol>) -> Option<Version> {
 }
 
 pub struct Identity(Pfx);
-unsafe impl Sync for Identity {}
-unsafe impl Send for Identity {}
 
 impl Identity {
     pub fn from_pkcs12(buf: &[u8], pass: &str) -> Result<Identity, Error> {
         let pkcs12 = Pfx::parse(buf).map_err(Error::Pkcs12)?;
         let decrypted = pkcs12.decrypt(&pass, None).map_err(Error::Pkcs12)?;
         Ok(Identity(decrypted))
+    }
+}
+
+impl Clone for Identity {
+    fn clone(&self) -> Self {
+        Identity(self.0.clone())
     }
 }
 
