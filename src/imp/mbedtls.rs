@@ -24,7 +24,6 @@ fn load_ca_certs(dir: &str) -> TlsResult<Vec<::Certificate>> {
     let mut certs = Vec::new();
 
     for path in paths {
-
         if let Ok(mut file) = fs::File::open(path.unwrap().path()) {
             let mut contents = Vec::new();
             if let Ok(_) = file.read_to_end(&mut contents) {
@@ -104,7 +103,6 @@ fn map_version(protocol: Option<Protocol>) -> Option<Version> {
     } else {
         None
     }
-
 }
 
 pub struct Identity(Pfx);
@@ -149,11 +147,7 @@ impl Certificate {
 }
 
 fn cert_to_vec(certs_in: &[::Certificate]) -> Vec<MbedtlsCert> {
-    let mut certs : Vec<MbedtlsCert> = Vec::with_capacity(certs_in.len());
-    for cert in certs_in {
-        certs.push((cert.0).0.clone())
-    }
-    certs
+    certs_in.iter().map(|cert| (cert.0).0.clone()).collect()
 }
 
 #[derive(Debug)]
@@ -414,8 +408,7 @@ impl<S> TlsStream<S> {
     }
 
     pub fn buffered_read_size(&self) -> Result<usize, Error> {
-        //Ok(unsafe { (*self.session).bytes_available() })
-        Err(Error::Custom("Waiting on https://github.com/fortanix/rust-mbedtls/pull/52".to_owned()))
+        Ok(unsafe { (*self.session).bytes_available() })
     }
 
     pub fn peer_certificate(&self) -> Result<Option<Certificate>, Error> {
