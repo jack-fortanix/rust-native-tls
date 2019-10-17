@@ -244,6 +244,7 @@ pub struct TlsConnector {
     min_protocol: Option<Protocol>,
     max_protocol: Option<Protocol>,
     root_certificates: Vec<::Certificate>,
+    identity: Option<::Identity>,
     accept_invalid_certs: bool,
     accept_invalid_hostnames: bool,
     use_sni: bool,
@@ -251,10 +252,6 @@ pub struct TlsConnector {
 
 impl TlsConnector {
     pub fn new(builder: &TlsConnectorBuilder) -> Result<TlsConnector, Error> {
-        if builder.identity.is_some() {
-            return Err(Error::Custom("Client authentication not supported".to_owned()));
-        }
-
         let trust_roots = if builder.root_certificates.len() > 0 {
             builder.root_certificates.clone()
         } else {
@@ -265,6 +262,7 @@ impl TlsConnector {
             min_protocol: builder.min_protocol,
             max_protocol: builder.max_protocol,
             root_certificates: trust_roots,
+            identity: builder.identity.clone(),
             accept_invalid_certs: builder.accept_invalid_certs,
             accept_invalid_hostnames: builder.accept_invalid_hostnames,
             use_sni: builder.use_sni
@@ -277,6 +275,33 @@ impl TlsConnector {
     {
         // If any of the ? fail then memory leaks ...
 
+        let identity = if let Some(identity) = &self.identity {
+            let mut keys = (identity.0).0.private_keys().collect::<Vec<_>>();
+            let certificates = (identity.0).0.certificates().collect::<Vec<_>>();
+
+            if keys.len() != 1 {
+                return Err(HandshakeError::Failure(Error::Custom("Unexpected number of keys in PKCS12 file".to_owned())))
+            }
+            if certificates.len() == 0 {
+                return Err(HandshakeError::Failure(Error::Custom("PKCS12 file is missing certificate chain".to_owned())))
+            }
+
+            let mut cert_chain = vec![];
+            for cert in certificates {
+                cert_chain.push(cert.0?);
+            }
+
+            fn pk_clone(pk: &mut Pk) -> TlsResult<Pk> {
+                let der = pk.write_private_der_vec()?;
+                Pk::from_private_key(&der, None)
+            }
+            let key = Box::new(keys.pop().unwrap().0.map_err(|_| TlsError::PkInvalidAlg)?);
+
+            Some((cert_chain, key))
+        } else {
+            None
+        };
+
         unsafe {
             let ca_vec = Box::into_raw(Box::new(cert_to_vec(&self.root_certificates)));
             let ca_list = Box::into_raw(Box::new(CertList::from_vec(&mut *ca_vec).ok_or(TlsError::AesInvalidKeyLength)?));
@@ -285,6 +310,17 @@ impl TlsConnector {
             let config = Box::into_raw(Box::new(Config::new(Endpoint::Client, Transport::Stream, Preset::Default)));
             (*config).set_rng(Some(&mut *rng));
             (*config).set_ca_list(Some(&mut *ca_list), None);
+
+            let mut cred_certs = ::std::ptr::null_mut();
+            let mut cred_cert_list = ::std::ptr::null_mut();
+            let mut cred_pk = ::std::ptr::null_mut();
+
+            if let Some((certificates,mut pk)) = identity {
+                cred_certs = Box::into_raw(Box::new(certificates.to_vec()));
+                cred_cert_list = Box::into_raw(Box::new(CertList::from_vec(&mut *cred_certs).ok_or(TlsError::CamelliaInvalidInputLength)?));
+                cred_pk = Box::into_raw(Box::new(Pk::from_private_key(&pk.write_private_der_vec()?, None)?));
+                (*config).push_cert(&mut *cred_cert_list, &mut *cred_pk)?;
+            }
 
             if self.accept_invalid_certs {
                 (*config).set_authmode(mbedtls::ssl::config::AuthMode::None);
@@ -309,9 +345,9 @@ impl TlsConnector {
                 role: ProtocolRole::Client,
                 ca_certs: ca_vec,
                 ca_cert_list: ca_list,
-                cred_pk: ::std::ptr::null_mut(),
-                cred_certs: ::std::ptr::null_mut(),
-                cred_cert_list: ::std::ptr::null_mut(),
+                cred_pk: cred_pk,
+                cred_certs: cred_certs,
+                cred_cert_list: cred_cert_list,
                 entropy: entropy,
                 rng: rng,
                 config: config,
@@ -358,14 +394,10 @@ impl TlsAcceptor {
             cert_chain.push(cert.0?);
         }
 
-        fn pk_clone(pk: &mut Pk) -> TlsResult<Pk> {
-            let der = pk.write_private_der_vec()?;
-            Pk::from_private_key(&der, None)
-        }
+        let key : &mut Pk = &mut keys.pop().unwrap().0.map_err(|_| TlsError::PkInvalidAlg)?;
 
         unsafe {
-            let key : &mut Pk = &mut keys.pop().unwrap().0.map_err(|_| TlsError::PkInvalidAlg)?;
-            let pk = Box::into_raw(Box::new(pk_clone(key)?));
+            let pk = Box::into_raw(Box::new(Pk::from_private_key(&key.write_private_der_vec()?, None)?));
             let cert_chain = Box::into_raw(Box::new(cert_chain.to_vec()));
             let cert_list = Box::into_raw(Box::new(CertList::from_vec(&mut *cert_chain).ok_or(TlsError::CamelliaInvalidInputLength)?));
             let entropy = Box::into_raw(Box::new(OsEntropy::new()));
