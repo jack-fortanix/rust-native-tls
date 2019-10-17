@@ -45,6 +45,12 @@ pub enum Error {
     Custom(String),
 }
 
+#[derive(Debug, Copy, Clone)]
+enum ProtocolRole {
+    Client,
+    Server
+}
+
 impl From<TlsError> for Error {
     fn from(err: TlsError) -> Error {
         Error::Normal(err)
@@ -152,6 +158,7 @@ fn cert_to_vec(certs_in: &[::Certificate]) -> Vec<MbedtlsCert> {
 
 #[derive(Debug)]
 pub struct TlsStream<S> {
+    role: ProtocolRole,
     ca_certs: *mut Vec<MbedtlsCert>,
     ca_cert_list: *mut CertList<'static>,
     cred_pk: *mut Pk,
@@ -299,6 +306,7 @@ impl TlsConnector {
             let session = Box::into_raw(Box::new(std::mem::transmute::<Session<'_>, Session<'static>>(session))); // yolo
 
             Ok(TlsStream {
+                role: ProtocolRole::Client,
                 ca_certs: ca_vec,
                 ca_cert_list: ca_list,
                 cred_pk: ::std::ptr::null_mut(),
@@ -335,8 +343,8 @@ impl TlsAcceptor {
     where
         S: io::Read + io::Write
     {
-        let mut keys = self.identity.private_keys().map_err(Error::Pkcs12).map_err(HandshakeError::Failure)?;
-        let certificates = self.identity.certificates().map_err(Error::Pkcs12).map_err(HandshakeError::Failure)?;
+        let mut keys = self.identity.private_keys().collect::<Vec<_>>();
+        let certificates = self.identity.certificates().collect::<Vec<_>>();
 
         if keys.len() != 1 {
             return Err(HandshakeError::Failure(Error::Custom("Unexpected number of keys in PKCS12 file".to_owned())))
@@ -347,7 +355,7 @@ impl TlsAcceptor {
 
         let mut cert_chain = vec![];
         for cert in certificates {
-            cert_chain.push(cert.0);
+            cert_chain.push(cert.0?);
         }
 
         fn pk_clone(pk: &mut Pk) -> TlsResult<Pk> {
@@ -356,7 +364,8 @@ impl TlsAcceptor {
         }
 
         unsafe {
-            let pk = Box::into_raw(Box::new(pk_clone(&mut keys[0].0)?));
+            let key : &mut Pk = &mut keys.pop().unwrap().0.map_err(|_| TlsError::PkInvalidAlg)?;
+            let pk = Box::into_raw(Box::new(pk_clone(key)?));
             let cert_chain = Box::into_raw(Box::new(cert_chain.to_vec()));
             let cert_list = Box::into_raw(Box::new(CertList::from_vec(&mut *cert_chain).ok_or(TlsError::CamelliaInvalidInputLength)?));
             let entropy = Box::into_raw(Box::new(OsEntropy::new()));
@@ -379,6 +388,7 @@ impl TlsAcceptor {
             let session = Box::into_raw(Box::new(std::mem::transmute::<Session<'_>, Session<'static>>(session))); // yolo
 
             Ok(TlsStream {
+                role: ProtocolRole::Server,
                 ca_certs: ::std::ptr::null_mut(),
                 ca_cert_list: ::std::ptr::null_mut(),
                 cred_pk: pk,
@@ -413,8 +423,19 @@ impl<S> TlsStream<S> {
         match unsafe { (*self.session).peer_cert() } {
             None => Ok(None),
             Some(mut certs) => {
-                let cert = certs.next();
-                match cert {
+                match certs.next() {
+                    None => Ok(None),
+                    Some(c) => Ok(Some(Certificate::from_der(c.as_der())?))
+                }
+            }
+        }
+    }
+
+    fn server_certificate(&self) -> Result<Option<Certificate>, Error> {
+        match self.role {
+            ProtocolRole::Client => self.peer_certificate(),
+            ProtocolRole::Server => {
+                match unsafe { (*self.cred_certs).first() } {
                     None => Ok(None),
                     Some(c) => Ok(Some(Certificate::from_der(c.as_der())?))
                 }
@@ -423,9 +444,7 @@ impl<S> TlsStream<S> {
     }
 
     pub fn tls_server_end_point(&self) -> Result<Option<Vec<u8>>, Error> {
-        // FIXME need to take server certificate in all cases, not always peer cert
-        // so this is broken for servers
-        let cert = match self.peer_certificate()? {
+        let cert = match self.server_certificate()? {
             Some(cert) => cert,
             None => return Ok(None),
         };
