@@ -485,10 +485,7 @@ impl<S: io::Read + io::Write> io::Read for TlsStream<S> {
 impl<S: io::Read + io::Write> io::Write for TlsStream<S> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         unsafe {
-            //println!("writing to {:?}", self);
-            let r = (*self.session).write(buf);
-            //println!("back from writing to {:?} {:?}", self, r);
-            r
+            (*self.session).write(buf)
         }
     }
 
