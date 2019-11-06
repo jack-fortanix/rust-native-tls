@@ -38,6 +38,22 @@ fn load_ca_certs(dir: &str) -> TlsResult<Vec<::Certificate>> {
     Ok(certs)
 }
 
+fn load_system_trust_roots() -> Result<Vec<::Certificate>, Error> {
+    let paths = [
+        "/etc/pki/CA/certs", // Fedora, RHEL
+        "/usr/share/ca-certificates/mozilla", // Ubuntu, Debian, Arch, Gentoo
+    ];
+
+    for path in paths.iter() {
+        if let Ok(certs) = load_ca_certs(path) {
+            return Ok(certs);
+        }
+    }
+
+    Err(Error::Custom("Could not load system default trust roots".to_owned()))
+}
+
+
 #[derive(Debug)]
 pub enum Error {
     Normal(TlsError),
@@ -255,7 +271,7 @@ impl TlsConnector {
         let trust_roots = if builder.root_certificates.len() > 0 {
             builder.root_certificates.clone()
         } else {
-            load_ca_certs("/usr/share/ca-certificates/mozilla")?
+            load_system_trust_roots()?
         };
 
         Ok(TlsConnector {
