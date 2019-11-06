@@ -12,7 +12,7 @@ readme = "README.md"
 sgx = ["mbedtls"]
 
 [dependencies]
-mbedtls = { features = ["threading", "pkcs12", "pkcs12_rc2", "std"], git = "https://github.com/fortanix/rust-mbedtls", branch = "master", optional = true }
+mbedtls = { version = "0.5.1", features = ["threading", "pkcs12", "pkcs12_rc2", "std"], optional = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 security-framework = "0.3.1"
@@ -25,7 +25,7 @@ tempfile = "3.0"
 schannel = "0.1.16"
 
 [target.'cfg(feature = "mbedtls")'.dependencies]
-mbedtls = { features = ["threading", "threading", "pkcs12", "pkcs12_rc2", "std"], git = "https://github.com/fortanix/rust-mbedtls", branch = "master" }
+mbedtls = { version = "0.5.1", features = ["threading", "pkcs12", "pkcs12_rc2", "std"], optional = true }
 
 [target.'cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios", feature = "mbedtls")))'.dependencies]
 log = "0.4.5"
